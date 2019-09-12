@@ -1,0 +1,210 @@
+﻿using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using AudioHelm;
+using UnityEngine.Audio;
+using UnityEditor;
+public class SinesteticaManager : MonoBehaviour {
+	private static SinesteticaManager _instance;
+	public static SinesteticaManager Instance
+	{
+		get{
+			return _instance;
+		}
+	}
+	public GameObject sinesteticaPrefab;
+	public AudioMixerGroup[] audioMixers; 
+	public SinesteticaObject curent;
+	public List<SinesteticaObject> sinesteticaObjects = new List<SinesteticaObject>();
+	private IEnumerator recordRoutine;
+	public int nextChannel = 0;
+
+	void Start(){
+		_instance = this;
+		CreateNewSinestetica();
+		
+	}
+	void CreateNewSinestetica()
+	{
+		try{
+			var curent = Instantiate(sinesteticaPrefab).GetComponent<SinesteticaObject>();
+			curent.channel = nextChannel;
+			curent.audioSource.outputAudioMixerGroup = audioMixers[nextChannel];
+			curent.helmController.channel = curent.channel; 
+			nextChannel++;
+			sinesteticaObjects.Add(curent);
+			curent.playRoutine = PlayRoutine(curent);
+			this.curent = curent;
+			StartCoroutine(this.curent.playRoutine);}
+		catch(System.Exception e){
+			Debug.LogError(e.Message);
+		}
+	}
+	private void PlayANote(SinesteticaObject obj){
+		obj.helmController.NoteOn(Utils.kMiddleC, 1, 200);
+	}
+	private void StopANote(SinesteticaObject obj){
+		obj.helmController.NoteOff(Utils.kMiddleC);
+	}
+	// public void PlayCurent(){
+	// 	PlayCurentUpdate();
+	// 	curent.lineRenderer.enabled = true;
+	// 	PlayANote(curent);
+	// }
+	// public void PlayCurentUpdate(){
+	// 	UpdateValues(curent.helmController,new SynthValues(InputListenner.Instance.curentPlaying));
+	// 	UpdateOscilloscopeRenderer(curent,InputListenner.Instance.curentPlaying);
+	// }
+	// public void StopCurent(){
+	// 		PlayCurentUpdate();
+	// 		curent.lineRenderer.enabled= false;
+	// 		StopANote(curent);
+	// }
+	public void StartRecord(){
+		print("StartRecord");
+		recordRoutine = RecordingRoutine(curent);
+		StartCoroutine(recordRoutine);
+	}
+	public void StopRecord()
+	{
+		StopCoroutine(recordRoutine);
+		StopCoroutine(curent.playRoutine);
+		curent.isPlaying = true;
+		curent.playRoutine = RecordRoutine(curent);
+		StartCoroutine(curent.playRoutine);
+		if(nextChannel==16){
+			LimitException();
+			return;
+		}
+		CreateNewSinestetica();
+	}
+	public void LimitException(){
+		Debug.LogError("Limite de canais do Helm atingido");
+	}
+	public void RemovePrevious(){
+		if(sinesteticaObjects.Count==1) return;
+		var obj = sinesteticaObjects[sinesteticaObjects.Count-1];
+		StopCoroutine(obj.playRoutine);
+		Destroy(obj.gameObject);
+		sinesteticaObjects.RemoveAt(sinesteticaObjects.Count-1);
+		nextChannel--;
+	}
+	public float[] GetHelmData(SinesteticaObject obj){
+		Native.HelmGetBufferData(obj.channel, obj.curentAudioData, obj.curentAudioData.Length, 2);
+		return obj.curentAudioData;
+	}
+	public void UpdateValues(HelmController controller, SynthValues values){
+		try{
+			controller.SetParameterAtIndex((int)ParamIndex.xPositionMainHand, values.primaryPose.position.x);
+			controller.SetParameterAtIndex((int)ParamIndex.yPositionMainHand, values.primaryPose.position.y);
+			controller.SetParameterAtIndex((int)ParamIndex.zPositionMainHand, values.primaryPose.position.z);
+			controller.SetParameterAtIndex((int)ParamIndex.xRotationMainHand, values.primaryPose.eulerRotation.x);
+			controller.SetParameterAtIndex((int)ParamIndex.yRotationMainHand, values.primaryPose.eulerRotation.y);
+			controller.SetParameterAtIndex((int)ParamIndex.zRotationMainHand, values.primaryPose.eulerRotation.z);
+			controller.SetParameterAtIndex((int)ParamIndex.xPositionSecondHand, values.secondaryPose.position.x);
+			controller.SetParameterAtIndex((int)ParamIndex.yPositionSecondHand, values.secondaryPose.position.y);
+			controller.SetParameterAtIndex((int)ParamIndex.zPositionSecondHand, values.secondaryPose.position.z);
+			controller.SetParameterAtIndex((int)ParamIndex.xRotationSecondHand, values.secondaryPose.eulerRotation.x);
+			controller.SetParameterAtIndex((int)ParamIndex.yRotationSecondHand, values.secondaryPose.eulerRotation.y);
+			controller.SetParameterAtIndex((int)ParamIndex.zRotationSecondHand, values.secondaryPose.eulerRotation.z);   
+			controller.SetParameterAtIndex((int)ParamIndex.pressureTrigger, values.inputs.primaryTrigger);
+		}
+		catch(System.Exception e){
+			Debug.LogError(e.Message);
+		}
+	}
+																	//arrumar isso
+	public void UpdateOscilloscopeRenderer(SinesteticaObject obj, InputValues values){
+		try{
+			var points = OscilloscopeManager.LineOscillation(obj.curentAudioData);
+			obj.lineRenderer.SetPositions(points);
+
+			var valuesToSynth= new SynthValues(values);
+			OscilloscopeManager.SetOscilloScaler(obj.transform,ref obj.lineRenderer,valuesToSynth);
+			obj.OscilloscopeTransform.position = values.primaryPose.position;
+			obj.OscilloscopeTransform.eulerAngles = values.primaryPose.eulerRotation;
+			OscilloscopeManager.SetColor(ref obj.lineRenderer,valuesToSynth.primaryPose.position.y);
+		}
+		catch(System.Exception e){
+			Debug.LogError(e.Message);
+		}
+	}
+	private IEnumerator PlayRoutine(SinesteticaObject obj){
+		bool isPlaying = false;
+		while(true){
+			yield return new WaitForFixedUpdate();
+			GetHelmData(obj);
+			UpdateValues(obj.helmController,new SynthValues(InputListenner.Instance.curentPlaying));
+			UpdateOscilloscopeRenderer(obj,InputListenner.Instance.curentPlaying);
+			if(InputListenner.Instance.curentPlaying.inputs.primaryBTrigger && !isPlaying){
+				obj.lineRenderer.enabled= true;
+				isPlaying = true;
+				PlayANote(obj);
+			}
+			if(!InputListenner.Instance.curentPlaying.inputs.primaryBTrigger && isPlaying){
+				obj.lineRenderer.enabled= false;
+				isPlaying = false;
+				StopANote(obj);
+			}
+		}
+	}
+	private IEnumerator RecordRoutine(SinesteticaObject obj){
+		bool isPlaying = false;
+		while(true){
+			foreach(SinesteticaValue sValues in obj.sinesteticaValues){
+				yield return new WaitForFixedUpdate();
+				obj.curentAudioData = sValues.audioData;
+				UpdateOscilloscopeRenderer(obj,sValues.values);
+				UpdateValues(obj.helmController,new SynthValues(sValues.values));
+				if(sValues.values.inputs.primaryBTrigger && !isPlaying){
+					obj.lineRenderer.enabled= true;
+					isPlaying = true;
+					PlayANote(obj);
+				}
+				if(!sValues.values.inputs.primaryBTrigger && isPlaying){
+					obj.lineRenderer.enabled= false;
+					isPlaying = false;
+					StopANote(obj);
+				}
+			}
+			yield return new WaitForSeconds(0.05f);
+		}
+	}
+	private IEnumerator RecordingRoutine(SinesteticaObject obj){
+		while(true){
+			yield return new WaitForFixedUpdate();
+			obj.sinesteticaValues.Add(new SinesteticaValue{
+				values = InputListenner.Instance.curentPlaying,
+				audioData = obj.curentAudioData
+			});
+		}
+	}
+	void OnApplicationQuit(){
+		StopAllCoroutines();
+		//  foreach(SinesteticaObject obj in sinesteticaObjects){
+		// 	Destroy(obj.gameObject);
+		//  }
+		sinesteticaObjects.ForEach(a =>Destroy(a.gameObject));
+		sinesteticaObjects.Clear();
+		curent= null;
+		InputListenner.Instance.UnSubscribeEvents();
+		
+	}
+
+}
+public enum ParamIndex
+{
+	xPositionMainHand = 0,
+	yPositionMainHand = 1,
+	zPositionMainHand = 2,
+	xRotationMainHand = 3,
+	yRotationMainHand = 4,
+	zRotationMainHand = 5,
+	xPositionSecondHand = 6,
+	yPositionSecondHand = 7,
+	zPositionSecondHand = 8,
+	xRotationSecondHand = 9,
+	yRotationSecondHand = 10,
+	zRotationSecondHand = 11,
+	pressureTrigger = 12
+}
